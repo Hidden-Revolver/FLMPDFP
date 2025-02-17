@@ -1,0 +1,18 @@
+[package]
+name = "cosafablabparserpdf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+regex = "1.11.1"
+csv = "1.3.1"
+indicatif = "0.17.9"
+pdf-extract = "0.8.2"
+arboard = "3.4.1"
+clap = "4.5.29"
+
+[profile.release]
+opt-level = "z"          # Optimización enfocada en tamaño
+strip = true              # Elimina símbolos de depuración
+codegen-units = 1         # Mejora la optimización a costa de tiempo de compilación
+panic = "abort"           # Reduce el código al abortar en lugar de desenrollar
