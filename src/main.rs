@@ -1,60 +1,93 @@
+use crate::VecPdfInfo::{Em, Rec};
 use arboard::Clipboard;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use csv::Writer;
 use indicatif::{ProgressBar, ProgressStyle};
 use pdf_extract::extract_text;
 use regex::Regex;
 use std::path::Path;
 use std::{fs, io};
-struct PdfInfo {
+
+struct PdfInfoEm {
     fecha: String,
     total: String,
     cliente: String,
 }
+struct PdfInfoRec {
+    concepto: String,
+    fecha: String,
+    nif: String,
+    empresa: String,
+    base: String,
+    iva: String,
+    total: f32,
+}
+enum VecPdfInfo {
+    Rec(Vec<PdfInfoRec>),
+    Em(Vec<PdfInfoEm>),
+}
 
-fn extract_info_pdf(pdf_path: &Path, pb: &ProgressBar) -> PdfInfo {
+fn procesar_pdf_em(pdf_path: &Path, pb: &ProgressBar) -> PdfInfoEm {
     let text = extract_text(pdf_path).unwrap();
 
     let name_pattern = Regex::new(r"CLIENTE:\s*[a-zA-ZáéíóúñÑÁÉÍÓÚ., ]+").unwrap();
     let date_pattern = Regex::new(r"\d{2}/\d{2}/\d{4}").unwrap();
     let total_pattern = Regex::new(r"TOTAL A FACTURAR\s*[\d,.]+\d{2}€").unwrap();
 
-    let fecha = date_pattern.find(&text).map_or("No encontrado".to_string(),|m| m.as_str().to_string().trim().to_string());
+    let fecha = date_pattern
+        .find(&text)
+        .map_or("No encontrado".to_string(), |m| {
+            m.as_str().to_string().trim().to_string()
+        });
     if fecha == "No encontrado" {
-        let st=format!("ALERTA: Fecha no encontrada en el pdf: {}", pdf_path.display());
+        let st = format!(
+            "ALERTA: Fecha no encontrada en el pdf: {}",
+            pdf_path.display()
+        );
         pb.println(st);
     }
-    let total = total_pattern.find(&text).map_or("No encontrado".to_string(),|m| m.as_str()[17..].to_string().trim().to_string());
+    let total = total_pattern
+        .find(&text)
+        .map_or("No encontrado".to_string(), |m| {
+            m.as_str()[17..].to_string().trim().to_string()
+        });
     if total == "No encontrado" {
-        let st=format!("ALERTA: Importe no encontrado en el pdf: {}", pdf_path.display());
+        let st = format!(
+            "ALERTA: Importe no encontrado en el pdf: {}",
+            pdf_path.display()
+        );
         pb.println(st);
     }
-    let cliente = name_pattern.find(&text).map_or("No encontrado".to_string(),|m| m.as_str()[9..].to_string().trim().to_string());
+    let cliente = name_pattern
+        .find(&text)
+        .map_or("No encontrado".to_string(), |m| {
+            m.as_str()[9..].to_string().trim().to_string()
+        });
     if cliente == "No encontrado" {
-        let st=format!("ALERTA: Cliente no encontrada en el pdf: {}", pdf_path.display());
+        let st = format!(
+            "ALERTA: Cliente no encontrada en el pdf: {}",
+            pdf_path.display()
+        );
         pb.println(st);
     }
-    PdfInfo {
+    PdfInfoEm {
         fecha,
         total,
         cliente,
     }
 }
-fn ordenar(resultados: &mut [PdfInfo], col: &str) {
+
+fn ordenar(resultados: &mut [PdfInfoEm], col: &str) {
     match col {
         "Fecha" => {
-            resultados.sort_by(|a, b| {
-                let partesa: Vec<&str> = a.fecha.split("/").collect();
-                let partesb: Vec<&str> = b.fecha.split("/").collect();
-                (partesa[2].parse::<i32>().unwrap() * 10000 // esto es optimizable
-                    + partesa[1].parse::<i32>().unwrap() * 100
-                    + partesa[0].parse::<i32>().unwrap())
-                .cmp(
-                    &(partesb[2].parse::<i32>().unwrap() * 10000
-                        + partesb[1].parse::<i32>().unwrap() * 100
-                        + partesb[0].parse::<i32>().unwrap()),
-                )
-            });
+            fn getfechacmp(fech: &str) -> i32 {
+                let partes: Vec<&str> = fech.split("/").collect();
+                partes[2].parse::<i32>().unwrap() * 10000
+                    + partes[1].parse::<i32>().unwrap() * 100
+                    + partes[0].parse::<i32>().unwrap()
+            }
+            resultados
+                .sort_by(|a, b| getfechacmp(a.fecha.as_str()).cmp(&getfechacmp(b.fecha.as_str())));
         }
         "Importe" => {
             resultados.sort_by(|a, b| {
@@ -77,7 +110,8 @@ fn ordenar(resultados: &mut [PdfInfo], col: &str) {
         }
     }
 }
-fn crear_tabla(resultados: &mut Vec<PdfInfo>, col: &str) {
+
+fn crear_tabla(resultados: &mut Vec<PdfInfoEm>, col: &str) {
     let mut wtr = Writer::from_path("resultados.csv").unwrap();
     wtr.write_record(["Fecha", "Importe", "Cliente"]).unwrap();
     ordenar(resultados, col);
@@ -99,7 +133,7 @@ fn copiar_al_portapapeles(datos: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-fn formatear_como_tabla(resultados: &mut Vec<PdfInfo>, col: &str) -> String {
+fn formatear_como_tabla(resultados: &mut Vec<PdfInfoEm>, col: &str) -> String {
     let mut tabla = String::from("Fecha\tImporte\tCliente\n");
     ordenar(resultados, col);
     for info in resultados {
@@ -110,17 +144,9 @@ fn formatear_como_tabla(resultados: &mut Vec<PdfInfo>, col: &str) -> String {
     }
     tabla
 }
-fn main() {
-    println!("Procesamiento de PDFs\n");
-    /*
-    let args: Vec<String> = env::args().collect();
-    let verbose = args.contains(&"-v".to_string()) || args.contains(&"--verbose".to_string());
-    let ordenar_cliente = args.contains(&"-oc".to_string()) || args.contains(&"--ordenar_cliente".to_string());
-    let ordenar_precio = args.contains(&"-op".to_string()) || args.contains(&"--ordenar_precio".to_string());
-    let csv=args.contains(&"-c".to_string()) || args.contains(&"--csv".to_string());
-    let help=args.contains(&"-h".to_string()) || args.contains(&"--help".to_string());
-     */
-    let matches = Command::new("Procesamiento de PDFs")
+
+fn get_arg_matches() -> ArgMatches {
+    Command::new("Procesamiento de PDFs")
         .version("2.5.4")
         .author("Carlos Manzanedo Sola")
         .about("Procesa archivos PDF de importe y los copia directamente en tu portapapeles")
@@ -152,7 +178,20 @@ fn main() {
                 .action(ArgAction::SetTrue)
                 .help("Exporta el contenido a un csv"),
         )
-        .get_matches();
+        .arg(
+            Arg::new("procesar_recibidos")
+                .short('r')
+                .long("procesar_recibidos")
+                .action(ArgAction::SetTrue)
+                .help("Procesa los PDFs recibidos"),
+        )
+        .get_matches()
+}
+
+fn main() {
+    println!("Procesamiento de PDFs\n");
+
+    let matches = get_arg_matches();
 
     let res = if matches.get_flag("ordenar_precio") {
         "Importe"
@@ -162,8 +201,16 @@ fn main() {
         "Fecha"
     };
 
-    let carpeta = Path::new("./archivos");
-    let mut resultados = Vec::new();
+    let carpeta = if matches.get_flag("procesar_recibidos") {
+        Path::new("./Recibidos")
+    } else {
+        Path::new("./Emitidos")
+    };
+    let resultados = if matches.get_flag("procesar_recibidos") {
+        Rec(Vec::new())
+    } else {
+        Em(Vec::new())
+    };
 
     let pdfs: Vec<_> = fs::read_dir(carpeta)
         .unwrap()
@@ -202,7 +249,7 @@ fn main() {
     pb.set_style(
         ProgressStyle::default_bar()
             .template("[{elapsed_precise}]|[{eta_precise}]: [{bar:40.cyan/blue}] {pos:>7}/{len:7} [{msg}] {per_sec}")
-            .expect("REASON")
+            .expect("ERROR")
             .progress_chars("# "),
     );
     if res == "Importe" {
@@ -212,19 +259,33 @@ fn main() {
     } else {
         pb.set_message("Ordenando por fecha")
     }
-    for pdf_path in pdfs {
-        let info = extract_info_pdf(&pdf_path,&pb);
-        resultados.push(info);
-        pb.inc(1);
+    match resultados {
+        Rec(ref mut vec) => {
+            todo!()
+        }
+        Em(ref mut vec) => {
+            for pdf_path in pdfs {
+                let info = procesar_pdf_em(&pdf_path, &pb);
+                vec.push(info);
+                pb.inc(1);
+            }
+        }
     }
     pb.finish_with_message("Procesamiento completado");
 
     if matches.get_flag("verbose") {
-        for info in &resultados {
-            println!(
-                "Importe: {}\nFecha: {}\nCliente: {}\n",
-                info.total, info.fecha, info.cliente
-            );
+        match resultados {
+            Rec(ref vec) => {
+                todo!()
+            }
+            Em(ref vec) => {
+                for info in vec {
+                    println!(
+                        "Importe: {}\nFecha: {}\nCliente: {}\n",
+                        info.total, info.fecha, info.cliente
+                    );
+                }
+            }
         }
     }
     if matches.get_flag("csv") {
