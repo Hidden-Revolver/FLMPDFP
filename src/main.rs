@@ -13,6 +13,7 @@ struct PdfInfoEm {
     total: String,
     cliente: String,
 }
+
 struct PdfInfoRec {
     concepto: String,
     fecha: String,
@@ -20,11 +21,24 @@ struct PdfInfoRec {
     empresa: String,
     base: String,
     iva: String,
-    total: f32,
+    total: String,
 }
+
 enum VecPdfInfo {
     Rec(Vec<PdfInfoRec>),
     Em(Vec<PdfInfoEm>),
+}
+
+#[derive(Clone)]
+enum Empresa {
+    ALIEXPRESS,
+    AMAZON,
+    BRICOGEEK,
+    GST3D,
+    LEROYMERLIN,
+    ROBOTOPIA,
+    XRSHOP,
+    NULL
 }
 
 fn procesar_pdf_em(pdf_path: &Path, pb: &ProgressBar) -> PdfInfoEm {
@@ -36,45 +50,123 @@ fn procesar_pdf_em(pdf_path: &Path, pb: &ProgressBar) -> PdfInfoEm {
 
     let fecha = date_pattern
         .find(&text)
-        .map_or("No encontrado".to_string(), |m| {
-            m.as_str().to_string().trim().to_string()
+        .map_or({pb.println(format!("ALERTA: Fecha no encontrada en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m| {
+            m.as_str().trim().to_string()
         });
-    if fecha == "No encontrado" {
-        let st = format!(
-            "ALERTA: Fecha no encontrada en el pdf: {}",
-            pdf_path.display()
-        );
-        pb.println(st);
-    }
     let total = total_pattern
         .find(&text)
-        .map_or("No encontrado".to_string(), |m| {
-            m.as_str()[17..].to_string().trim().to_string()
+        .map_or({pb.println(format!("ALERTA: Importe no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m| {
+            m.as_str()[17..].trim().to_string()
         });
-    if total == "No encontrado" {
-        let st = format!(
-            "ALERTA: Importe no encontrado en el pdf: {}",
-            pdf_path.display()
-        );
-        pb.println(st);
-    }
     let cliente = name_pattern
         .find(&text)
-        .map_or("No encontrado".to_string(), |m| {
-            m.as_str()[9..].to_string().trim().to_string()
+        .map_or({pb.println(format!("ALERTA: Cliente no encontrada en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m| {
+            m.as_str()[9..].trim().to_string()
         });
-    if cliente == "No encontrado" {
-        let st = format!(
-            "ALERTA: Cliente no encontrada en el pdf: {}",
-            pdf_path.display()
-        );
-        pb.println(st);
-    }
     PdfInfoEm {
         fecha,
         total,
         cliente,
     }
+}
+
+fn buscar_empresa(pdf_path: &Path) -> Empresa { // TODO Revisar esta función
+    let text = extract_text(pdf_path).unwrap();
+    let patrones = [
+        (Empresa::ALIEXPRESS, Regex::new(r"Alibaba\.com").unwrap()),
+        (Empresa::AMAZON, Regex::new(r"amazon\.es").unwrap()),
+        (Empresa::BRICOGEEK, Regex::new(r"E-Pulse\s*Servicios").unwrap()),
+        (Empresa::GST3D, Regex::new(r"GST\s*3D\s*SL").unwrap()),
+        (Empresa::LEROYMERLIN, Regex::new(r"leroymerlin\.es").unwrap()),
+        (Empresa::ROBOTOPIA, Regex::new(r"Distintiva\s*Solutions").unwrap()),
+        (Empresa::XRSHOP, Regex::new(r"xrshop\.store").unwrap()),
+    ];
+    for (empresa, regex) in &patrones {
+        if regex.find(&text).is_some() {
+            return empresa.clone();
+        }
+    }
+    Empresa::NULL
+}
+
+fn procesar_pdf_rec(pdf_path: &Path, pb: &ProgressBar) -> PdfInfoRec {
+    let text = extract_text(pdf_path).unwrap();
+    let empresa=buscar_empresa(pdf_path);
+    let mut pdfinfo:PdfInfoRec= PdfInfoRec{
+        concepto: "".to_string(),
+        fecha: "".to_string(),
+        nif: "".to_string(),
+        empresa: "".to_string(),
+        base: "".to_string(),
+        iva: "".to_string(),
+        total: "".to_string(),
+    };
+    match empresa {
+        Empresa::ALIEXPRESS => {
+            let expresion_concepto=Regex::new(r"Order Number:\s*.*\n*(.+)").unwrap();
+            let expresion_fecha = Regex::new(r"Invoice Date : \d{4}-\d{2}-\d{4}").unwrap();
+            let expresion_empresa=Regex::new(r"Sold by:\n*.+").unwrap(); //NIF=EMPRESA
+            let expresion_base=Regex::new(r"Taxable.+\n.+\n.+").unwrap();
+            let expresion_iva=Regex::new(r"Total VAT.+\n.+\n.+").unwrap();
+            let expresion_total=Regex::new(r"Grant Total.*\n.+\n.+").unwrap();
+            
+            let concepto=expresion_concepto.find(&text).map_or({pb.println(format!("ALERTA: Concepto no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()},|m|{
+                Regex::new(r"Order Number:\s*.*\n*").unwrap().replace(m.as_str(), "").trim().to_string()
+            });
+            let fecha=expresion_fecha.find(&text).map_or({pb.println(format!("ALERTA: Fecha no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()},|m|{
+                m.as_str()[15..].trim().to_string()
+            });
+            let empresa=expresion_empresa.find(&text).map_or({pb.println(format!("ALERTA: Empresa no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m|{
+                Regex::new(r"Sold by:\n*").unwrap().replace(m.as_str(), "").trim().to_string()
+            });
+            let nif=empresa.clone();
+            if nif == "No encontrado" {
+                pb.println(format!("ALERTA: NIF no encontrado en el pdf: {}", pdf_path.display()));
+            }
+            let base=expresion_base.find(&text).map_or({pb.println(format!("ALERTA: BASE no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m|{
+                Regex::new(r"Taxable.+\n.+\n").unwrap().replace(m.as_str(), "").trim().to_string()
+            });
+            let iva=expresion_iva.find(&text).map_or({pb.println(format!("ALERTA: IVA no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m|{
+                Regex::new(r"Total VAT.+\n.+\n").unwrap().replace(m.as_str(), "").trim().to_string()
+            });
+            let total=expresion_total.find(&text).map_or({pb.println(format!("ALERTA: Total no encontrado en el pdf: {}", pdf_path.display()));"No encontrado".to_string()}, |m|{
+                Regex::new(r"Grant Total.*\n.+\n").unwrap().replace(m.as_str(), "").trim().to_string()
+            });
+            
+            pdfinfo=PdfInfoRec{
+                concepto,
+                fecha,
+                nif,
+                empresa,
+                base,
+                iva,
+                total,
+            }
+        }
+        Empresa::AMAZON => {
+
+        }
+        Empresa::BRICOGEEK => {
+
+        }
+        Empresa::GST3D => {
+
+        }
+        Empresa::LEROYMERLIN => {
+
+        }
+        Empresa::ROBOTOPIA => {
+
+        }
+        Empresa::XRSHOP => {
+
+        }
+        Empresa::NULL => {
+            pb.println(format!("ALERTA: Empresa no encontrado en el pdf: {}", pdf_path.display()));
+        }
+    }
+    
+    pdfinfo
 }
 
 fn ordenar(resultados: &mut [PdfInfoEm], col: &str) {
@@ -206,7 +298,7 @@ fn main() {
     } else {
         Path::new("./Emitidos")
     };
-    let resultados = if matches.get_flag("procesar_recibidos") {
+    let mut resultados = if matches.get_flag("procesar_recibidos") {
         Rec(Vec::new())
     } else {
         Em(Vec::new())
@@ -261,7 +353,11 @@ fn main() {
     }
     match resultados {
         Rec(ref mut vec) => {
-            todo!()
+            for pdf_path in pdfs {
+                let info = procesar_pdf_rec(&pdf_path, &pb);
+                vec.push(info);
+                pb.inc(1);
+            }
         }
         Em(ref mut vec) => {
             for pdf_path in pdfs {
@@ -289,12 +385,26 @@ fn main() {
         }
     }
     if matches.get_flag("csv") {
-        crear_tabla(&mut resultados, res);
+        match resultados {
+            Rec(ref vec) => {
+                todo!()
+            }
+            Em(ref mut vec) => {
+                crear_tabla(vec, res);
+            },
+        }
     }
-    let tabla_formateada = formatear_como_tabla(&mut resultados, res);
-    copiar_al_portapapeles(&tabla_formateada).unwrap();
-    if matches.get_flag("verbose") {
-        println!("Datos copiados: 3 columnas, {} filas", resultados.len());
+    match resultados {
+        Rec(ref vec) => {
+            todo!()
+        }
+        Em(ref mut vec) => {
+            let tabla_formateada = formatear_como_tabla(vec, res);
+            copiar_al_portapapeles(&tabla_formateada).unwrap();
+            if matches.get_flag("verbose") {
+                println!("Datos copiados: 3 columnas, {} filas", vec.len());
+            }
+        }
     }
 
     println!("Presiona Enter para salir...");
